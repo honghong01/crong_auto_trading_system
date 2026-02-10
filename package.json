@@ -1,0 +1,20 @@
+{
+  "name": "crong-trader",
+  "version": "1.0.0",
+  "description": "🦖 Crong Trader - 24/7 자동 스캘핑 트레이딩 봇",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "author": "홍아름 & 크롱 🦖",
+  "license": "MIT",
+  "dependencies": {
+    "jsonwebtoken": "^9.0.3",
+    "mysql2": "^3.9.0",
+    "uuid": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
