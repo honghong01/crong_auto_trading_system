@@ -60,13 +60,26 @@ module.exports = {
   },
 
   // ========================================
-  // Claude API (LLM) 설정
+  // LLM 설정 (Gemini / Claude 선택 가능)
   // ========================================
   // LLM을 통한 시장 분석 및 매매가 산출
+  // 현재 사용: Gemini (비용 효율적)
+  LLM: {
+    PROVIDER: 'gemini',  // 'gemini' 또는 'claude'
+  },
+
+  // Gemini API 설정
+  // 환경변수: GEMINI_KEY
+  GEMINI: {
+    API_KEY: process.env.GEMINI_KEY,
+    MODEL: 'gemini-2.0-flash',  // 빠르고 저렴한 모델
+  },
+
+  // Claude API 설정 (백업용)
   // 환경변수: CLAUDE_KEY
   CLAUDE: {
     API_KEY: process.env.CLAUDE_KEY,
-    MODEL: 'claude-opus-4-5-20251101',  // 사용할 모델 (비용 주의)
+    MODEL: 'claude-opus-4-5-20251101',
   },
 
   // ========================================

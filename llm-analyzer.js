@@ -1,31 +1,84 @@
 /**
  * ============================================================
- * Crong Trader v1.0.0 - LLM Analyzer (Claude) 모듈
+ * Crong Trader v1.0.0 - LLM Analyzer (Gemini / Claude)
  * ============================================================
  * 
  * 마스터: 홍아름
  * 작성자: 크롱 🦖
  * 작성일: 2026-02-10
  * 
- * Claude API를 사용하여 시장 데이터를 분석하고
+ * LLM API를 사용하여 시장 데이터를 분석하고
  * 매매 결정을 내리는 함수들입니다.
  * 
- * 주요 기능:
- * 1. 최적 페어 선정: 여러 코인 중 가장 유망한 것 선택
- * 2. 매매가 분석: 매수가, 익절가, 손절가 산출
+ * 지원 LLM:
+ * - Gemini (기본, 비용 효율적)
+ * - Claude (백업, 고성능)
  * 
- * 프롬프트 엔지니어링:
- * - 공격적인 스캘핑 전략 가정
- * - 30분 내 거래 완료 조건
- * - 수수료(0.05%) 고려
- * - JSON 형식 응답 강제
+ * config.js의 LLM.PROVIDER 설정으로 선택 가능
  * ============================================================
  */
 
 const config = require('./config');
 const { log } = require('./utils');
 
+// API 엔드포인트
+const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/models';
 const CLAUDE_API = 'https://api.anthropic.com/v1/messages';
+
+/**
+ * Gemini API 호출
+ * 
+ * @param {string} prompt - 사용자 프롬프트
+ * @param {string} systemPrompt - 시스템 프롬프트 (AI 역할 정의)
+ * @returns {Promise<string>} AI 응답 텍스트
+ */
+async function askGemini(prompt, systemPrompt = null) {
+  const model = config.GEMINI.MODEL;
+  const url = `${GEMINI_API}/${model}:generateContent?key=${config.GEMINI.API_KEY}`;
+
+  // Gemini 요청 본문 구성
+  const contents = [];
+  
+  // 시스템 프롬프트가 있으면 먼저 추가
+  if (systemPrompt) {
+    contents.push({
+      role: 'user',
+      parts: [{ text: systemPrompt }]
+    });
+    contents.push({
+      role: 'model',
+      parts: [{ text: '네, 이해했습니다. 해당 역할로 분석하겠습니다.' }]
+    });
+  }
+  
+  // 사용자 프롬프트 추가
+  contents.push({
+    role: 'user',
+    parts: [{ text: prompt }]
+  });
+
+  const body = {
+    contents,
+    generationConfig: {
+      temperature: 0.7,
+      maxOutputTokens: 2048,
+    },
+  };
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const error = await res.text();
+    throw new Error(`Gemini API Error: ${res.status} - ${error}`);
+  }
+
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
 
 /**
  * Claude API 호출
@@ -43,7 +96,6 @@ async function askClaude(prompt, systemPrompt = null) {
     messages,
   };
   
-  // 시스템 프롬프트가 있으면 AI의 역할/성격 정의
   if (systemPrompt) {
     body.system = systemPrompt;
   }
@@ -68,39 +120,41 @@ async function askClaude(prompt, systemPrompt = null) {
 }
 
 /**
+ * LLM 호출 (Provider에 따라 분기)
+ * 
+ * config.LLM.PROVIDER 설정에 따라 Gemini 또는 Claude를 호출합니다.
+ * 
+ * @param {string} prompt - 사용자 프롬프트
+ * @param {string} systemPrompt - 시스템 프롬프트
+ * @returns {Promise<string>} AI 응답 텍스트
+ */
+async function askLLM(prompt, systemPrompt = null) {
+  const provider = config.LLM.PROVIDER;
+  
+  if (provider === 'gemini') {
+    return askGemini(prompt, systemPrompt);
+  } else if (provider === 'claude') {
+    return askClaude(prompt, systemPrompt);
+  } else {
+    throw new Error(`Unknown LLM provider: ${provider}`);
+  }
+}
+
+/**
  * [스캔-4] 최적 페어 선정
  * 
  * 여러 코인의 데이터를 분석하여 30분 내 상승 가능성이
  * 가장 높은 페어 1개를 선정합니다.
  * 
- * 분석 기준:
- * - RSI (과매수/과매도)
- * - MACD (추세)
- * - 볼린저밴드 (변동성)
- * - 거래량
- * - 호가 스프레드
- * 
  * @param {array} pairsData - 페어별 시세 데이터
  * @returns {Promise<object>} 선정 결과
- * 
- * @example
- * const result = await selectBestPair(pairsData);
- * // {
- * //   selectedPair: 'KRW-BTC',
- * //   koreanName: '비트코인',
- * //   confidence: 0.85,
- * //   reason: '...',
- * //   expectedReturn: 1.5
- * // }
  */
 async function selectBestPair(pairsData) {
-  // 시스템 프롬프트: AI의 역할 정의
   const systemPrompt = `당신은 공격적인 암호화폐 스캘핑 트레이더입니다.
 주어진 데이터를 분석하여 30분 내 상승 가능성이 가장 높은 페어 1개를 선정해야 합니다.
 RSI, MACD, 볼린저밴드, 거래량, 호가 스프레드 등을 종합적으로 분석하세요.
 응답은 반드시 JSON 형식으로만 해주세요.`;
 
-  // 사용자 프롬프트: 분석할 데이터와 응답 형식 지정
   const prompt = `다음 암호화폐 페어들의 데이터를 분석하고, 30분 내 상승 가능성이 가장 높은 페어 1개를 선정해주세요.
 
 페어 데이터:
@@ -115,10 +169,9 @@ ${JSON.stringify(pairsData, null, 2)}
   "expectedReturn": 예상수익률(%)
 }`;
 
-  const response = await askClaude(prompt, systemPrompt);
+  const response = await askLLM(prompt, systemPrompt);
   
   try {
-    // 응답에서 JSON 추출 (마크다운 코드블록 등 처리)
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -136,29 +189,12 @@ ${JSON.stringify(pairsData, null, 2)}
  * 선정된 페어의 상세 데이터를 분석하여
  * 구체적인 매매 가격을 산출합니다.
  * 
- * 고려 사항:
- * - 초단타(스캘핑) 전략
- * - 업비트 수수료 0.05%
- * - 30분 내 거래 완료 목표
- * - 현재 호가 상황
- * 
  * @param {string} market - 마켓 코드
  * @param {string} koreanName - 한글 코인명
  * @param {array} candles - 캔들 데이터
  * @param {object} orderbook - 호가 데이터
  * @param {number} currentPrice - 현재가
  * @returns {Promise<object>} 분석 결과
- * 
- * @example
- * const result = await analyzeTradePrices('KRW-BTC', '비트코인', candles, orderbook, 50000000);
- * // {
- * //   buyPrice: 49900000,
- * //   takeProfit: 50200000,
- * //   stopLoss: 49700000,
- * //   expectedHoldTime: "15분",
- * //   riskRewardRatio: 1.5,
- * //   analysis: "..."
- * // }
  */
 async function analyzeTradePrices(market, koreanName, candles, orderbook, currentPrice) {
   const systemPrompt = `당신은 공격적인 암호화폐 스캘핑 트레이더입니다.
@@ -188,7 +224,7 @@ ${JSON.stringify(orderbook, null, 2)}
   "analysis": "분석 요약"
 }`;
 
-  const response = await askClaude(prompt, systemPrompt);
+  const response = await askLLM(prompt, systemPrompt);
   
   try {
     const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -208,6 +244,8 @@ ${JSON.stringify(orderbook, null, 2)}
 // 모듈 내보내기
 // ============================================================
 module.exports = {
+  askLLM,
+  askGemini,
   askClaude,
   selectBestPair,
   analyzeTradePrices,
