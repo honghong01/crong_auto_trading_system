@@ -297,13 +297,15 @@ async function selectBestPair(pairsData) {
     bbPos: p.bollinger ? ((p.currentPrice - p.bollinger.lower) / (p.bollinger.upper - p.bollinger.lower) * 100).toFixed(0) + '%' : null
   }));
 
-  const systemPrompt = `암호화폐 스캘퍼. 30분 내 상승 가능성 높은 페어 1개 선정. 기회 없으면 noEntry:true. JSON만 응답.`;
+  const systemPrompt = `암호화폐 스캘퍼. 30분 내 상승 가능성 높은 페어 1개 선정. 
+⚠️ 중요: 하락 추세(change가 음수이고 MACD 음수)인 코인은 절대 선정하지 마세요!
+기회 없으면 noEntry:true. JSON만 응답.`;
 
-  const prompt = `페어 분석 후 JSON 응답:
+  const prompt = `페어 분석 후 JSON 응답 (하락 추세 코인 제외!):
 ${JSON.stringify(summaryData)}
 
 응답형식: {"noEntry":false,"selectedPair":"KRW-XXX","koreanName":"이름","confidence":0.8,"reason":"이유","expectedReturn":1.5}
-또는: {"noEntry":true,"reason":"이유"}`;
+또는: {"noEntry":true,"reason":"모든 코인이 하락 추세"}`;
 
   const response = await askLLM(prompt, systemPrompt);
   
