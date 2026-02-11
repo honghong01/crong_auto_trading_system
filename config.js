@@ -16,7 +16,7 @@ module.exports = {
   // ========================================
   // 시스템 버전
   // ========================================
-  VERSION: '1.0.0',
+  VERSION: '1.0.1',
 
   // ========================================
   // 기본 설정 (실행 시 마스터 입력으로 오버라이드 가능)
@@ -72,7 +72,7 @@ module.exports = {
   // 환경변수: GEMINI_KEY
   GEMINI: {
     API_KEY: process.env.GEMINI_KEY,
-    MODEL: 'gemini-2.0-flash',  // 빠르고 저렴한 모델
+    MODEL: 'gemini-3.0-flash',  // Gemini 3.0 Flash (2026년 최신, 빠르고 저렴)
   },
 
   // Claude API 설정 (백업용)

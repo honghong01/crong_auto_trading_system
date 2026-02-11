@@ -141,32 +141,34 @@ async function askLLM(prompt, systemPrompt = null) {
 }
 
 /**
- * [스캔-4] 최적 페어 선정
+ * [스캔-3.5] 데이터 충분성 확인 및 추가 정보 요청
  * 
- * 여러 코인의 데이터를 분석하여 30분 내 상승 가능성이
- * 가장 높은 페어 1개를 선정합니다.
+ * LLM에게 현재 데이터가 분석에 충분한지 확인하고,
+ * 부족한 경우 어떤 추가 정보가 필요한지 파악합니다.
  * 
  * @param {array} pairsData - 페어별 시세 데이터
- * @returns {Promise<object>} 선정 결과
+ * @returns {Promise<object>} 충분성 체크 결과 및 추가 필요 정보
  */
-async function selectBestPair(pairsData) {
-  const systemPrompt = `당신은 공격적인 암호화폐 스캘핑 트레이더입니다.
-주어진 데이터를 분석하여 30분 내 상승 가능성이 가장 높은 페어 1개를 선정해야 합니다.
-RSI, MACD, 볼린저밴드, 거래량, 호가 스프레드 등을 종합적으로 분석하세요.
+async function checkDataSufficiency(pairsData) {
+  const systemPrompt = `당신은 암호화폐 데이터 분석 전문가입니다.
+주어진 데이터가 30분 내 스캘핑 매매 결정을 내리기에 충분한지 평가해주세요.
 응답은 반드시 JSON 형식으로만 해주세요.`;
 
-  const prompt = `다음 암호화폐 페어들의 데이터를 분석하고, 30분 내 상승 가능성이 가장 높은 페어 1개를 선정해주세요.
+  const prompt = `다음 암호화폐 데이터를 검토하고, 스캘핑 매매 결정을 위해 충분한지 평가해주세요.
 
-페어 데이터:
-${JSON.stringify(pairsData, null, 2)}
+현재 제공된 데이터:
+- 캔들 데이터 (OHLCV): ${pairsData[0]?.candles?.length || 0}개
+- 호가 데이터: 있음
+- 현재가, 변동률, 24시간 거래대금: 있음
 
-다음 JSON 형식으로만 응답해주세요:
+페어 수: ${pairsData.length}개
+
+다음 JSON 형식으로 응답해주세요:
 {
-  "selectedPair": "KRW-XXX",
-  "koreanName": "코인명",
-  "confidence": 0.0~1.0,
-  "reason": "선정 이유",
-  "expectedReturn": 예상수익률(%)
+  "isSufficient": true/false,
+  "missingData": ["부족한 데이터 목록"],
+  "additionalDataNeeded": ["추가로 필요한 데이터 (예: 'rsi', 'macd', 'bollinger', 'funding_rate', 'fear_greed_index')"],
+  "reason": "평가 이유"
 }`;
 
   const response = await askLLM(prompt, systemPrompt);
@@ -175,6 +177,196 @@ ${JSON.stringify(pairsData, null, 2)}
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
+    }
+    return { isSufficient: true, additionalDataNeeded: [] };
+  } catch (e) {
+    log('warn', '데이터 충분성 체크 파싱 실패, 기본값 사용');
+    return { isSufficient: true, additionalDataNeeded: [] };
+  }
+}
+
+/**
+ * [스캔-3.6] 추가 기술적 지표 계산
+ * 
+ * LLM이 요청한 추가 지표를 계산하여 데이터에 추가합니다.
+ * 
+ * @param {array} pairsData - 페어별 시세 데이터
+ * @param {array} additionalDataNeeded - 필요한 추가 지표 목록
+ * @returns {array} 보강된 페어 데이터
+ */
+function enrichPairsData(pairsData, additionalDataNeeded) {
+  return pairsData.map(pair => {
+    const enrichedPair = { ...pair };
+    const candles = pair.candles || [];
+    const closes = candles.map(c => c.trade_price);
+
+    // RSI 계산 (14기간)
+    if (additionalDataNeeded.includes('rsi') && closes.length >= 14) {
+      enrichedPair.rsi = calculateRSI(closes, 14);
+    }
+
+    // 단순이동평균 (SMA)
+    if (additionalDataNeeded.includes('sma') || additionalDataNeeded.includes('ma')) {
+      enrichedPair.sma5 = calculateSMA(closes, 5);
+      enrichedPair.sma20 = calculateSMA(closes, 20);
+    }
+
+    // 볼린저밴드
+    if (additionalDataNeeded.includes('bollinger') && closes.length >= 20) {
+      enrichedPair.bollinger = calculateBollinger(closes, 20);
+    }
+
+    // MACD (12, 26, 9)
+    if (additionalDataNeeded.includes('macd') && closes.length >= 26) {
+      enrichedPair.macd = calculateMACD(closes);
+    }
+
+    return enrichedPair;
+  });
+}
+
+// RSI 계산 함수
+function calculateRSI(prices, period = 14) {
+  if (prices.length < period + 1) return null;
+  
+  let gains = 0, losses = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = prices[i - 1] - prices[i]; // 최신이 앞에 있음
+    if (diff > 0) gains += diff;
+    else losses -= diff;
+  }
+  
+  const avgGain = gains / period;
+  const avgLoss = losses / period;
+  if (avgLoss === 0) return 100;
+  
+  const rs = avgGain / avgLoss;
+  return 100 - (100 / (1 + rs));
+}
+
+// 단순이동평균 계산
+function calculateSMA(prices, period) {
+  if (prices.length < period) return null;
+  const sum = prices.slice(0, period).reduce((a, b) => a + b, 0);
+  return sum / period;
+}
+
+// 볼린저밴드 계산
+function calculateBollinger(prices, period = 20) {
+  const sma = calculateSMA(prices, period);
+  if (!sma) return null;
+  
+  const squaredDiffs = prices.slice(0, period).map(p => Math.pow(p - sma, 2));
+  const stdDev = Math.sqrt(squaredDiffs.reduce((a, b) => a + b, 0) / period);
+  
+  return {
+    upper: sma + (stdDev * 2),
+    middle: sma,
+    lower: sma - (stdDev * 2),
+    bandwidth: ((sma + stdDev * 2) - (sma - stdDev * 2)) / sma * 100
+  };
+}
+
+// MACD 계산
+function calculateMACD(prices) {
+  const ema12 = calculateEMA(prices, 12);
+  const ema26 = calculateEMA(prices, 26);
+  if (!ema12 || !ema26) return null;
+  
+  const macdLine = ema12 - ema26;
+  return { macdLine, ema12, ema26 };
+}
+
+// 지수이동평균 계산
+function calculateEMA(prices, period) {
+  if (prices.length < period) return null;
+  
+  const multiplier = 2 / (period + 1);
+  let ema = prices.slice(-period).reduce((a, b) => a + b, 0) / period;
+  
+  for (let i = prices.length - period - 1; i >= 0; i--) {
+    ema = (prices[i] - ema) * multiplier + ema;
+  }
+  return ema;
+}
+
+/**
+ * [스캔-4] 최적 페어 선정 (데이터 충분성 확인 포함)
+ * 
+ * 여러 코인의 데이터를 분석하여 30분 내 상승 가능성이
+ * 가장 높은 페어 1개를 선정합니다.
+ * 
+ * 🆕 변경사항:
+ * - LLM에게 데이터 충분성을 먼저 확인
+ * - 부족한 데이터는 자동으로 계산하여 보강
+ * - 진입 추천이 없으면 null 반환 (거래 스킵용)
+ * 
+ * @param {array} pairsData - 페어별 시세 데이터
+ * @returns {Promise<object|null>} 선정 결과 (추천 없으면 null)
+ */
+async function selectBestPair(pairsData) {
+  // [스캔-3.5] 데이터 충분성 확인
+  log('info', '[스캔-3.5] LLM에게 데이터 충분성 확인 중...');
+  const sufficiencyCheck = await checkDataSufficiency(pairsData);
+  
+  // [스캔-3.6] 부족한 데이터 보강
+  let enrichedData = pairsData;
+  if (!sufficiencyCheck.isSufficient && sufficiencyCheck.additionalDataNeeded?.length > 0) {
+    log('info', `[스캔-3.6] 추가 지표 계산 중: ${sufficiencyCheck.additionalDataNeeded.join(', ')}`);
+    enrichedData = enrichPairsData(pairsData, sufficiencyCheck.additionalDataNeeded);
+  }
+
+  const systemPrompt = `당신은 공격적인 암호화폐 스캘핑 트레이더입니다.
+주어진 데이터를 분석하여 30분 내 상승 가능성이 가장 높은 페어 1개를 선정해야 합니다.
+RSI, MACD, 볼린저밴드, 거래량, 호가 스프레드 등을 종합적으로 분석하세요.
+
+⚠️ 중요: 만약 현재 시장 상황에서 진입할 만한 좋은 기회가 없다면,
+무리하게 선정하지 말고 "noEntry": true를 반환하세요.
+손실을 피하는 것이 수익보다 중요합니다.
+
+응답은 반드시 JSON 형식으로만 해주세요.`;
+
+  const prompt = `다음 암호화폐 페어들의 데이터를 분석하고, 30분 내 상승 가능성이 가장 높은 페어 1개를 선정해주세요.
+
+페어 데이터:
+${JSON.stringify(enrichedData, null, 2)}
+
+다음 JSON 형식으로만 응답해주세요:
+{
+  "noEntry": false,
+  "selectedPair": "KRW-XXX",
+  "koreanName": "코인명",
+  "confidence": 0.0~1.0,
+  "reason": "선정 이유",
+  "expectedReturn": 예상수익률(%)
+}
+
+또는 진입 기회가 없는 경우:
+{
+  "noEntry": true,
+  "reason": "진입하지 않는 이유"
+}`;
+
+  const response = await askLLM(prompt, systemPrompt);
+  
+  try {
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const result = JSON.parse(jsonMatch[0]);
+      
+      // 🆕 진입 추천이 없는 경우 null 반환
+      if (result.noEntry === true) {
+        log('warn', `LLM 판단: 진입 기회 없음 - ${result.reason}`);
+        return null;
+      }
+      
+      // 🆕 신뢰도가 너무 낮은 경우도 스킵 (0.5 미만)
+      if (result.confidence < 0.5) {
+        log('warn', `LLM 판단: 신뢰도 부족 (${(result.confidence * 100).toFixed(1)}%) - ${result.reason}`);
+        return null;
+      }
+      
+      return result;
     }
     throw new Error('JSON 형식을 찾을 수 없습니다.');
   } catch (e) {
