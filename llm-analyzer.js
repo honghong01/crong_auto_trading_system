@@ -61,7 +61,7 @@ async function askGemini(prompt, systemPrompt = null) {
     contents,
     generationConfig: {
       temperature: 0.7,
-      maxOutputTokens: 2048,
+      maxOutputTokens: 4096,  // 응답 잘림 방지를 위해 증가
     },
   };
 
@@ -150,39 +150,12 @@ async function askLLM(prompt, systemPrompt = null) {
  * @returns {Promise<object>} 충분성 체크 결과 및 추가 필요 정보
  */
 async function checkDataSufficiency(pairsData) {
-  const systemPrompt = `당신은 암호화폐 데이터 분석 전문가입니다.
-주어진 데이터가 30분 내 스캘핑 매매 결정을 내리기에 충분한지 평가해주세요.
-응답은 반드시 JSON 형식으로만 해주세요.`;
-
-  const prompt = `다음 암호화폐 데이터를 검토하고, 스캘핑 매매 결정을 위해 충분한지 평가해주세요.
-
-현재 제공된 데이터:
-- 캔들 데이터 (OHLCV): ${pairsData[0]?.candles?.length || 0}개
-- 호가 데이터: 있음
-- 현재가, 변동률, 24시간 거래대금: 있음
-
-페어 수: ${pairsData.length}개
-
-다음 JSON 형식으로 응답해주세요:
-{
-  "isSufficient": true/false,
-  "missingData": ["부족한 데이터 목록"],
-  "additionalDataNeeded": ["추가로 필요한 데이터 (예: 'rsi', 'macd', 'bollinger', 'funding_rate', 'fear_greed_index')"],
-  "reason": "평가 이유"
-}`;
-
-  const response = await askLLM(prompt, systemPrompt);
-  
-  try {
-    const jsonMatch = response.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    }
-    return { isSufficient: true, additionalDataNeeded: [] };
-  } catch (e) {
-    log('warn', '데이터 충분성 체크 파싱 실패, 기본값 사용');
-    return { isSufficient: true, additionalDataNeeded: [] };
-  }
+  // 🆕 간소화: 기본 지표(RSI, MACD, 볼린저)는 항상 필요하므로 LLM 호출 생략
+  // 직접 필요한 지표 목록 반환
+  return {
+    isSufficient: false,
+    additionalDataNeeded: ['rsi', 'macd', 'bollinger']
+  };
 }
 
 /**
@@ -305,47 +278,32 @@ function calculateEMA(prices, period) {
  * @returns {Promise<object|null>} 선정 결과 (추천 없으면 null)
  */
 async function selectBestPair(pairsData) {
-  // [스캔-3.5] 데이터 충분성 확인
-  log('info', '[스캔-3.5] LLM에게 데이터 충분성 확인 중...');
+  // [스캔-3.5] 기본 지표 자동 추가 (LLM 호출 생략)
+  log('info', '[스캔-3.5] 기본 지표(RSI, MACD, 볼린저) 계산 중...');
   const sufficiencyCheck = await checkDataSufficiency(pairsData);
   
-  // [스캔-3.6] 부족한 데이터 보강
-  let enrichedData = pairsData;
-  if (!sufficiencyCheck.isSufficient && sufficiencyCheck.additionalDataNeeded?.length > 0) {
-    log('info', `[스캔-3.6] 추가 지표 계산 중: ${sufficiencyCheck.additionalDataNeeded.join(', ')}`);
-    enrichedData = enrichPairsData(pairsData, sufficiencyCheck.additionalDataNeeded);
-  }
+  // [스캔-3.6] 지표 계산
+  let enrichedData = enrichPairsData(pairsData, sufficiencyCheck.additionalDataNeeded);
 
-  const systemPrompt = `당신은 공격적인 암호화폐 스캘핑 트레이더입니다.
-주어진 데이터를 분석하여 30분 내 상승 가능성이 가장 높은 페어 1개를 선정해야 합니다.
-RSI, MACD, 볼린저밴드, 거래량, 호가 스프레드 등을 종합적으로 분석하세요.
+  // 🆕 데이터 요약 (토큰 절약)
+  const summaryData = enrichedData.map(p => ({
+    market: p.market,
+    name: p.koreanName,
+    price: p.currentPrice,
+    change: p.changeRate?.toFixed(2) + '%',
+    vol24h: (p.volume24h / 1e9).toFixed(1) + 'B',
+    rsi: p.rsi?.toFixed(1),
+    macd: p.macd?.macdLine?.toFixed(2),
+    bbPos: p.bollinger ? ((p.currentPrice - p.bollinger.lower) / (p.bollinger.upper - p.bollinger.lower) * 100).toFixed(0) + '%' : null
+  }));
 
-⚠️ 중요: 만약 현재 시장 상황에서 진입할 만한 좋은 기회가 없다면,
-무리하게 선정하지 말고 "noEntry": true를 반환하세요.
-손실을 피하는 것이 수익보다 중요합니다.
+  const systemPrompt = `암호화폐 스캘퍼. 30분 내 상승 가능성 높은 페어 1개 선정. 기회 없으면 noEntry:true. JSON만 응답.`;
 
-응답은 반드시 JSON 형식으로만 해주세요.`;
+  const prompt = `페어 분석 후 JSON 응답:
+${JSON.stringify(summaryData)}
 
-  const prompt = `다음 암호화폐 페어들의 데이터를 분석하고, 30분 내 상승 가능성이 가장 높은 페어 1개를 선정해주세요.
-
-페어 데이터:
-${JSON.stringify(enrichedData, null, 2)}
-
-다음 JSON 형식으로만 응답해주세요:
-{
-  "noEntry": false,
-  "selectedPair": "KRW-XXX",
-  "koreanName": "코인명",
-  "confidence": 0.0~1.0,
-  "reason": "선정 이유",
-  "expectedReturn": 예상수익률(%)
-}
-
-또는 진입 기회가 없는 경우:
-{
-  "noEntry": true,
-  "reason": "진입하지 않는 이유"
-}`;
+응답형식: {"noEntry":false,"selectedPair":"KRW-XXX","koreanName":"이름","confidence":0.8,"reason":"이유","expectedReturn":1.5}
+또는: {"noEntry":true,"reason":"이유"}`;
 
   const response = await askLLM(prompt, systemPrompt);
   
@@ -389,32 +347,24 @@ ${JSON.stringify(enrichedData, null, 2)}
  * @returns {Promise<object>} 분석 결과
  */
 async function analyzeTradePrices(market, koreanName, candles, orderbook, currentPrice) {
-  const systemPrompt = `당신은 공격적인 암호화폐 스캘핑 트레이더입니다.
-초단타 거래를 위한 매수가, 익절가, 손절가를 산출해야 합니다.
-업비트 수수료는 0.05%입니다. 수수료를 고려하여 수익이 나는 가격을 제시하세요.
-30분 내 거래가 완료되어야 함을 고려하세요.
-응답은 반드시 JSON 형식으로만 해주세요.`;
+  // 🆕 캔들 데이터 요약 (고가, 저가, 종가만)
+  const recentCandles = candles.slice(0, 10).map(c => ({
+    h: c.high_price,
+    l: c.low_price,
+    c: c.trade_price
+  }));
+  
+  // 🆕 호가 요약 (상위 3개씩만)
+  const askTop3 = orderbook.orderbook_units?.slice(0, 3).map(u => u.ask_price) || [];
+  const bidTop3 = orderbook.orderbook_units?.slice(0, 3).map(u => u.bid_price) || [];
 
-  const prompt = `다음 ${koreanName}(${market})의 데이터를 분석하고, 스캘핑 매매를 위한 가격을 제시해주세요.
+  const systemPrompt = `스캘퍼. 30분 내 매매가(매수/익절/손절) 산출. 수수료 0.05% 고려. JSON만 응답.`;
 
-현재가: ${currentPrice}원
-수수료: 0.05% (매수/매도 각각)
+  const prompt = `${koreanName}(${market}) 현재가:${currentPrice}
+캔들(최근10):${JSON.stringify(recentCandles)}
+매도호가:${askTop3} 매수호가:${bidTop3}
 
-최근 캔들 데이터 (최신 20개):
-${JSON.stringify(candles.slice(0, 20), null, 2)}
-
-호가 데이터:
-${JSON.stringify(orderbook, null, 2)}
-
-다음 JSON 형식으로만 응답해주세요:
-{
-  "buyPrice": 매수 희망가(원),
-  "takeProfit": 익절가(원),
-  "stopLoss": 손절가(원),
-  "expectedHoldTime": "예상 보유 시간",
-  "riskRewardRatio": 손익비,
-  "analysis": "분석 요약"
-}`;
+응답:{"buyPrice":숫자,"takeProfit":숫자,"stopLoss":숫자,"analysis":"요약"}`;
 
   const response = await askLLM(prompt, systemPrompt);
   
