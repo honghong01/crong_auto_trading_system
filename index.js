@@ -313,12 +313,7 @@ async function tradingCycle(selectedPair, pairDetail) {
           sellReason = '손절';
           log('warn', `\n🚨 손절가 도달! ${price.toLocaleString()}원`);
         }
-        // 시간 초과 조건: 사이클 시간 경과
-        else if (Date.now() - cycleStartTime >= MAX_CYCLE_TIME) {
-          sellTriggered = true;
-          sellReason = '시간초과';
-          log('warn', `\n⏰ 사이클 시간 초과 - 강제 매도`);
-        }
+        // 🆕 [v1.0.3] 시간 초과는 메인 루프에서 관리하므로 여기서 제거
 
         if (!sellTriggered) {
           await sleep(500);  // 0.5초 간격 체크 (빠른 반응)
