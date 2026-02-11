@@ -194,17 +194,15 @@ async function selectBestPair(pairsData) {
  * @param {object} pairDetail - 페어 상세 데이터
  */
 async function tradingCycle(selectedPair, pairDetail) {
-  const cycleStartTime = Date.now();
   const market = selectedPair.selectedPair;
   const koreanName = selectedPair.koreanName;
 
   log('info', `\n${'='.repeat(60)}`);
-  log('info', `거래 시작: ${koreanName} (${market})`);
+  log('info', `거래 실행: ${koreanName} (${market})`);
   log('info', `${'='.repeat(60)}\n`);
 
-  // 사이클 시간(30분) 동안 반복
-  while (Date.now() - cycleStartTime < MAX_CYCLE_TIME) {
-    try {
+  // 🆕 [v1.0.2] 단일 거래 실행 (루프는 메인에서 관리)
+  try {
       // ========================================
       // [스캔-5] LLM 매매가 분석
       // ========================================
@@ -385,19 +383,14 @@ async function tradingCycle(selectedPair, pairDetail) {
       log('trade', `매수: ${buyPrice.toLocaleString()}원 → 매도: ${sellPrice.toLocaleString()}원`);
       log('trade', `수익: ${profitAmount.toLocaleString()}원 (${profitRate.toFixed(2)}%)`);
 
-      // ========================================
-      // [스캔-6] 데이터 재조회 후 반복
-      // ========================================
-      log('info', '[스캔-6] 데이터 재조회...');
-      await sleep(1000);
+    // 🆕 [v1.0.2] 거래 결과 반환 (연속 손절 체크용)
+    return { result: sellReason, profitRate };
 
-    } catch (error) {
-      log('error', `거래 중 오류 발생: ${error.message}`);
-      await sleep(5000);  // 오류 시 5초 대기 후 재시도
-    }
+  } catch (error) {
+    log('error', `거래 중 오류 발생: ${error.message}`);
+    await sleep(5000);  // 오류 시 5초 대기 후 재시도
+    return { result: 'error', profitRate: 0 };
   }
-
-  log('info', `\n사이클 종료 (${MAX_CYCLE_TIME / 60000}분 경과)`);
 }
 
 /**
@@ -449,8 +442,42 @@ async function main() {
 
         const pairDetail = pairsData.find(p => p.market === bestPair.selectedPair);
 
-        // [거래반복1] 거래 사이클 실행
-        await tradingCycle(bestPair, pairDetail);
+        // 🆕 [v1.0.2] 연속 손절 카운터 및 거래 루프
+        let consecutiveLosses = 0;
+        const cycleStartTime = Date.now();
+
+        // 30분 사이클 내에서 거래 반복
+        while (Date.now() - cycleStartTime < MAX_CYCLE_TIME && isRunning) {
+          // [거래반복1] 단일 거래 실행
+          const tradeResult = await tradingCycle(bestPair, pairDetail);
+
+          // 거래 결과에 따른 처리
+          if (tradeResult.result === '손절') {
+            consecutiveLosses++;
+            log('warn', `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+            log('warn', `🔴 연속 손절: ${consecutiveLosses}회`);
+            
+            // 🆕 [v1.0.2] 2회 연속 손절 시 루프 중지 및 30분 슬립
+            if (consecutiveLosses >= 2) {
+              log('error', `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+              log('error', `🛑 2회 연속 손절 발생! 거래 루프 중지`);
+              log('error', `⏰ ${MAX_CYCLE_TIME / 60000}분 슬립 후 새로운 종목 스캔 시작...`);
+              log('error', `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+              await sleep(MAX_CYCLE_TIME);  // 30분 슬립
+              break;  // 거래 루프 탈출 → 새로운 종목 스캔으로
+            }
+            log('warn', `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
+          } else if (tradeResult.result === '익절') {
+            consecutiveLosses = 0;  // 익절 시 연속 손절 카운터 리셋
+            log('success', `🟢 익절 성공! 연속 손절 카운터 리셋`);
+          } else if (tradeResult.result === '시간초과' || tradeResult.result === 'error') {
+            // 시간초과나 에러는 연속 손절로 카운트하지 않음
+            break;
+          }
+
+          // 다음 거래 전 잠시 대기
+          await sleep(1000);
+        }
 
         log('info', '\n다음 사이클 시작...\n');
 
