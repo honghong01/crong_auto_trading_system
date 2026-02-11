@@ -72,7 +72,7 @@ module.exports = {
   // 환경변수: GEMINI_KEY
   GEMINI: {
     API_KEY: process.env.GEMINI_KEY,
-    MODEL: 'gemini-3.0-flash',  // Gemini 3.0 Flash (2026년 최신, 빠르고 저렴)
+    MODEL: 'gemini-3-flash-preview',  // Gemini 3 Flash Preview (2026년 최신)
   },
 
   // Claude API 설정 (백업용)
